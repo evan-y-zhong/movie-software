@@ -19,6 +19,8 @@ function App() {
   const [status, setStatus] = useState('Ready for input')
   const [sampled, setSampled] = useState(false)
   const [screenRegion, setScreenRegion] = useState<Region>({ x: 0.08, y: 0.08, width: 0.84, height: 0.84 })
+  const [clipLoaded, setClipLoaded] = useState(false)
+  const [clipPaused, setClipPaused] = useState(false)
   const dragStart = useRef<{ x: number; y: number } | null>(null)
 
   const drawFrame = useCallback(() => {
@@ -132,6 +134,8 @@ function App() {
     video.src = URL.createObjectURL(file)
     video.play().catch(() => undefined)
     setCameraActive(false)
+    setClipLoaded(true)
+    setClipPaused(false)
     setSourceLabel(file.name)
     setStatus('Video feed live')
   }
@@ -144,11 +148,37 @@ function App() {
       video.srcObject = stream
       await video.play()
       setCameraActive(true)
+      setClipLoaded(false)
       setSourceLabel('Camera input')
       setStatus('Camera live · auto controls may be active')
     } catch {
       setStatus('Camera permission unavailable — load a clip instead')
     }
+  }
+
+  const toggleClipPlayback = () => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) {
+      video.play().then(() => {
+        setClipPaused(false)
+        setStatus('Video playback resumed')
+      }).catch(() => setStatus('Unable to resume this clip'))
+    } else {
+      video.pause()
+      setClipPaused(true)
+      setStatus('Video playback paused')
+    }
+  }
+
+  const restartClip = () => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = 0
+    video.play().then(() => {
+      setClipPaused(false)
+      setStatus('Video restarted')
+    }).catch(() => setStatus('Video reset to beginning'))
   }
 
   const normalizedPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -232,7 +262,7 @@ function App() {
         </div>
 
         <aside className="control-panel">
-          <section className="control-section source-section"><div className="section-title"><span>01</span> INPUT</div><button className="camera-button" onClick={startCamera}>◉ Enable camera</button><label className="file-button">Load video clip<input type="file" accept="video/*" onChange={(e) => e.target.files?.[0] && loadVideo(e.target.files[0])} /></label></section>
+          <section className="control-section source-section"><div className="section-title"><span>01</span> INPUT</div><button className="camera-button" onClick={startCamera}>◉ Enable camera</button><label className="file-button">Load video clip<input type="file" accept="video/*" onChange={(e) => e.target.files?.[0] && loadVideo(e.target.files[0])} /></label>{clipLoaded && <div className="clip-controls"><button onClick={toggleClipPlayback}>{clipPaused ? '▶ Resume clip' : 'Ⅱ Pause clip'}</button><button onClick={restartClip}>↺ Restart</button></div>}</section>
           <section className="control-section"><div className="section-title"><span>02</span> KEY COLOR</div><div className="color-readout"><span className="color-chip" style={{ background: keyHex }} /><code>{keyHex.toUpperCase()}</code><button onClick={() => setSampled(false)}>Reset</button></div><p className="hint">Click a clean, evenly lit patch of your key surface.</p></section>
           <section className="control-section"><div className="section-title"><span>03</span> MATTE</div><label className="slider-row">Tolerance <output>{tolerance}</output><input type="range" min="20" max="180" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} /></label><label className="slider-row">Edge feather <output>{feather}</output><input type="range" min="0" max="80" value={feather} onChange={(e) => setFeather(Number(e.target.value))} /></label></section>
           <section className="control-section"><div className="section-title"><span>04</span> REFERENCE PLATE</div><label className="file-button">{reference ? 'Replace reference image' : 'Load reference image'}<input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) setReference(URL.createObjectURL(file)) }} /></label>{reference && <button className="clear-link" onClick={() => setReference(null)}>Remove plate</button>}</section>
