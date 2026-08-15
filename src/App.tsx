@@ -3,6 +3,7 @@ import './App.css'
 
 type ViewMode = 'composite' | 'mask' | 'diagnostic'
 type Region = { x: number; y: number; width: number; height: number }
+type Readiness = { score: number; label: string; message: string; lightingEven: boolean }
 
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -21,7 +22,9 @@ function App() {
   const [screenRegion, setScreenRegion] = useState<Region>({ x: 0.08, y: 0.08, width: 0.84, height: 0.84 })
   const [clipLoaded, setClipLoaded] = useState(false)
   const [clipPaused, setClipPaused] = useState(false)
+  const [readiness, setReadiness] = useState<Readiness>({ score: 0, label: 'WAITING', message: 'Add a camera feed or clip to begin.', lightingEven: false })
   const dragStart = useRef<{ x: number; y: number } | null>(null)
+  const lastAnalysisAt = useRef(0)
 
   const drawFrame = useCallback(() => {
     const video = videoRef.current
@@ -52,18 +55,35 @@ function App() {
     const regionRight = Math.round((screenRegion.x + screenRegion.width) * width)
     const regionBottom = Math.round((screenRegion.y + screenRegion.height) * height)
     let luminanceTotal = 0, redTotal = 0, greenTotal = 0, blueTotal = 0, regionSamples = 0
-    if (view === 'diagnostic') {
-      for (let y = regionTop; y < regionBottom; y += 4) for (let x = regionLeft; x < regionRight; x += 4) {
-        const i = (y * width + x) * 4
-        const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2]
-        luminanceTotal += r * 0.2126 + g * 0.7152 + b * 0.0722
-        redTotal += r; greenTotal += g; blueTotal += b; regionSamples += 1
-      }
+    for (let y = regionTop; y < regionBottom; y += 4) for (let x = regionLeft; x < regionRight; x += 4) {
+      const i = (y * width + x) * 4
+      const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2]
+      luminanceTotal += r * 0.2126 + g * 0.7152 + b * 0.0722
+      redTotal += r; greenTotal += g; blueTotal += b; regionSamples += 1
     }
     const averageLuminance = luminanceTotal / Math.max(1, regionSamples)
     const averageRed = redTotal / Math.max(1, regionSamples)
     const averageGreen = greenTotal / Math.max(1, regionSamples)
     const averageBlue = blueTotal / Math.max(1, regionSamples)
+    let varianceTotal = 0
+    for (let y = regionTop; y < regionBottom; y += 8) for (let x = regionLeft; x < regionRight; x += 8) {
+      const i = (y * width + x) * 4
+      const luminance = pixels[i] * 0.2126 + pixels[i + 1] * 0.7152 + pixels[i + 2] * 0.0722
+      varianceTotal += (luminance - averageLuminance) ** 2
+    }
+    const samplesForVariance = Math.max(1, Math.ceil((regionRight - regionLeft) / 8) * Math.ceil((regionBottom - regionTop) / 8))
+    const lightingVariation = Math.sqrt(varianceTotal / samplesForVariance)
+    if (Date.now() - lastAnalysisAt.current > 500) {
+      lastAnalysisAt.current = Date.now()
+      const lightingScore = Math.max(0, Math.min(100, Math.round(100 - lightingVariation * 2.2)))
+      const isEven = lightingVariation < 16
+      setReadiness({
+        score: sampled ? lightingScore : Math.min(62, lightingScore),
+        label: !sampled ? 'SETUP' : isEven ? 'READY' : lightingVariation < 28 ? 'CAUTION' : 'ADJUST',
+        message: !sampled ? 'Sample a clean patch of the key screen.' : isEven ? 'Lighting is even in the selected screen region.' : lightingVariation < 28 ? 'Some screen variation is visible. Check Diagnostic.' : 'Uneven lighting is likely to make this key harder.',
+        lightingEven: isEven,
+      })
+    }
 
     for (let i = 0; i < pixels.length; i += 4) {
       const r = pixels[i]
@@ -220,6 +240,11 @@ function App() {
   const finishRegion = () => {
     if (!dragStart.current) return
     dragStart.current = null
+    if (screenRegion.width < 0.08 || screenRegion.height < 0.08) {
+      setScreenRegion({ x: 0.08, y: 0.08, width: 0.84, height: 0.84 })
+      setStatus('Draw a larger box over the green screen for a useful lighting check')
+      return
+    }
     setStatus('Lighting check region updated · blue is even, red needs attention')
   }
 
@@ -234,6 +259,7 @@ function App() {
   }
 
   const keyHex = `#${[keyColor.r, keyColor.g, keyColor.b].map((part) => part.toString(16).padStart(2, '0')).join('')}`
+  const hasSource = sourceLabel !== 'No source selected'
 
   return (
     <main className="app-shell">
@@ -266,7 +292,7 @@ function App() {
           <section className="control-section"><div className="section-title"><span>02</span> KEY COLOR</div><div className="color-readout"><span className="color-chip" style={{ background: keyHex }} /><code>{keyHex.toUpperCase()}</code><button onClick={() => setSampled(false)}>Reset</button></div><p className="hint">Click a clean, evenly lit patch of your key surface.</p></section>
           <section className="control-section"><div className="section-title"><span>03</span> MATTE</div><label className="slider-row">Tolerance <output>{tolerance}</output><input type="range" min="20" max="180" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} /></label><label className="slider-row">Edge feather <output>{feather}</output><input type="range" min="0" max="80" value={feather} onChange={(e) => setFeather(Number(e.target.value))} /></label></section>
           <section className="control-section"><div className="section-title"><span>04</span> REFERENCE PLATE</div><label className="file-button">{reference ? 'Replace reference image' : 'Load reference image'}<input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) setReference(URL.createObjectURL(file)) }} /></label>{reference && <button className="clear-link" onClick={() => setReference(null)}>Remove plate</button>}</section>
-          <section className="control-section diagnostic-card"><div className="section-title"><span>05</span> LIGHTING CHECK</div><p>In Diagnostic, drag a box over the green screen. Blue matches that region's average; red marks lighting or color variation.</p><button onClick={() => setView('diagnostic')}>Open diagnostic</button></section>
+          <section className={`control-section readiness-card ${readiness.label.toLowerCase()}`}><div className="section-title"><span>05</span> SCREEN READY?</div><div className="readiness-score"><strong>{readiness.score}</strong><div><b>{readiness.label}</b><span>READINESS SCORE</span></div></div><p>{readiness.message}</p><ul className="readiness-list"><li className={hasSource ? 'done' : ''}>{hasSource ? '✓' : '○'} Input connected</li><li className={sampled ? 'done' : ''}>{sampled ? '✓' : '○'} Key color sampled</li><li className={readiness.lightingEven ? 'done' : ''}>{readiness.lightingEven ? '✓' : '○'} Screen lighting even</li><li className={reference ? 'done' : ''}>{reference ? '✓' : '○'} Reference plate loaded <em>optional</em></li></ul><button onClick={() => setView('diagnostic')}>Review lighting diagnostic</button></section>
         </aside>
       </section>
       <video ref={videoRef} muted playsInline className="hidden-video" />
