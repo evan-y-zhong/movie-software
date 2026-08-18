@@ -23,8 +23,20 @@ function App() {
   const [clipLoaded, setClipLoaded] = useState(false)
   const [clipPaused, setClipPaused] = useState(false)
   const [readiness, setReadiness] = useState<Readiness>({ score: 0, label: 'WAITING', message: 'Add a camera feed or clip to begin.', lightingEven: false })
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
+  const [audioInputId, setAudioInputId] = useState('default')
+  const [audioActive, setAudioActive] = useState(false)
+  const [audioDb, setAudioDb] = useState(-60)
+  const [audioClipping, setAudioClipping] = useState(false)
+  const [roomTone, setRoomTone] = useState<{ state: 'idle' | 'testing' | 'quiet' | 'noticeable' | 'high'; db?: number }>({ state: 'idle' })
   const dragStart = useRef<{ x: number; y: number } | null>(null)
   const lastAnalysisAt = useRef(0)
+  const audioStreamRef = useRef<MediaStream | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const audioAnimationRef = useRef(0)
+  const lastMeterUpdateAt = useRef(0)
+  const roomToneSamples = useRef<number[]>([])
 
   const drawFrame = useCallback(() => {
     const video = videoRef.current
@@ -142,10 +154,76 @@ function App() {
     return () => cancelAnimationFrame(animation)
   }, [drawFrame])
 
+  const stopSoundCheck = () => {
+    cancelAnimationFrame(audioAnimationRef.current)
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop())
+    audioStreamRef.current = null
+    analyserRef.current = null
+    audioContextRef.current?.close().catch(() => undefined)
+    audioContextRef.current = null
+    setAudioActive(false)
+    setAudioDb(-60)
+  }
+
   useEffect(() => () => {
     const stream = videoRef.current?.srcObject as MediaStream | null
     stream?.getTracks().forEach((track) => track.stop())
+    stopSoundCheck()
   }, [])
+
+  const startSoundCheck = async (deviceId = audioInputId) => {
+    try {
+      stopSoundCheck()
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId === 'default' ? undefined : { exact: deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false })
+      audioStreamRef.current = stream
+      const context = new AudioContext()
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 2048
+      context.createMediaStreamSource(stream).connect(analyser)
+      audioContextRef.current = context
+      analyserRef.current = analyser
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      setAudioInputs(devices.filter((device) => device.kind === 'audioinput'))
+      setAudioActive(true)
+      setAudioClipping(false)
+      setStatus('Sound check active · watch levels before rolling')
+
+      const samples = new Float32Array(analyser.fftSize)
+      const readMeter = () => {
+        if (!analyserRef.current) return
+        analyserRef.current.getFloatTimeDomainData(samples)
+        let sum = 0
+        let peak = 0
+        for (const sample of samples) { sum += sample * sample; peak = Math.max(peak, Math.abs(sample)) }
+        const db = Math.max(-60, 20 * Math.log10(Math.sqrt(sum / samples.length) || 0.001))
+        if (Date.now() - lastMeterUpdateAt.current > 90) {
+          lastMeterUpdateAt.current = Date.now()
+          setAudioDb(Math.round(db))
+          if (roomToneSamples.current.length) roomToneSamples.current.push(db)
+        }
+        if (peak > 0.985) setAudioClipping(true)
+        audioAnimationRef.current = requestAnimationFrame(readMeter)
+      }
+      readMeter()
+      return true
+    } catch {
+      setStatus('Microphone permission unavailable — choose or connect an audio input')
+      return false
+    }
+  }
+
+  const runRoomToneTest = async () => {
+    if (!audioActive && !await startSoundCheck()) return
+    roomToneSamples.current = []
+    setRoomTone({ state: 'testing' })
+    window.setTimeout(() => {
+      const samples = roomToneSamples.current
+      if (!samples.length) return
+      const average = samples.reduce((total, sample) => total + sample, 0) / samples.length
+      const state = average < -45 ? 'quiet' : average < -32 ? 'noticeable' : 'high'
+      setRoomTone({ state, db: Math.round(average) })
+    }, 5000)
+  }
 
   const loadVideo = (file: File) => {
     const video = videoRef.current!
@@ -292,7 +370,8 @@ function App() {
           <section className="control-section"><div className="section-title"><span>02</span> KEY COLOR</div><div className="color-readout"><span className="color-chip" style={{ background: keyHex }} /><code>{keyHex.toUpperCase()}</code><button onClick={() => setSampled(false)}>Reset</button></div><p className="hint">Click a clean, evenly lit patch of your key surface.</p></section>
           <section className="control-section"><div className="section-title"><span>03</span> MATTE</div><label className="slider-row">Tolerance <output>{tolerance}</output><input type="range" min="20" max="180" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} /></label><label className="slider-row">Edge feather <output>{feather}</output><input type="range" min="0" max="80" value={feather} onChange={(e) => setFeather(Number(e.target.value))} /></label></section>
           <section className="control-section"><div className="section-title"><span>04</span> REFERENCE PLATE</div><label className="file-button">{reference ? 'Replace reference image' : 'Load reference image'}<input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) setReference(URL.createObjectURL(file)) }} /></label>{reference && <button className="clear-link" onClick={() => setReference(null)}>Remove plate</button>}</section>
-          <section className={`control-section readiness-card ${readiness.label.toLowerCase()}`}><div className="section-title"><span>05</span> SCREEN READY?</div><div className="readiness-score"><strong>{readiness.score}</strong><div><b>{readiness.label}</b><span>READINESS SCORE</span></div></div><p>{readiness.message}</p><ul className="readiness-list"><li className={hasSource ? 'done' : ''}>{hasSource ? '✓' : '○'} Input connected</li><li className={sampled ? 'done' : ''}>{sampled ? '✓' : '○'} Key color sampled</li><li className={readiness.lightingEven ? 'done' : ''}>{readiness.lightingEven ? '✓' : '○'} Screen lighting even</li><li className={reference ? 'done' : ''}>{reference ? '✓' : '○'} Reference plate loaded <em>optional</em></li></ul><button onClick={() => setView('diagnostic')}>Review lighting diagnostic</button></section>
+          <section className="control-section audio-card"><div className="section-title"><span>05</span> SOUND CHECK</div><select value={audioInputId} onChange={(e) => { setAudioInputId(e.target.value); if (audioActive) startSoundCheck(e.target.value) }} aria-label="Audio input"><option value="default">Default microphone</option>{audioInputs.map((input, index) => <option key={input.deviceId} value={input.deviceId}>{input.label || `Audio input ${index + 1}`}</option>)}</select>{!audioActive ? <button className="audio-enable" onClick={() => startSoundCheck()}>◉ Enable sound check</button> : <><div className="meter-header"><span>LIVE LEVEL</span><b>{audioDb} dB</b></div><div className={`audio-meter ${audioClipping ? 'clipping' : ''}`}><i style={{ width: `${Math.max(2, Math.min(100, ((audioDb + 60) / 60) * 100))}%` }} /></div><div className={`audio-warning ${audioClipping ? 'warning' : ''}`}>{audioClipping ? '● Clipping detected — lower the input level' : audioDb < -45 ? '○ Signal is very low' : '✓ Signal present'}</div><button className="audio-stop" onClick={stopSoundCheck}>Stop sound check</button></>}<div className="room-tone"><div><b>ROOM TONE</b><span>{roomTone.state === 'testing' ? 'Listening…' : roomTone.state === 'quiet' ? `Quiet (${roomTone.db} dB)` : roomTone.state === 'noticeable' ? `Noticeable (${roomTone.db} dB)` : roomTone.state === 'high' ? `High noise (${roomTone.db} dB)` : 'Not measured'}</span></div><button disabled={roomTone.state === 'testing'} onClick={runRoomToneTest}>{roomTone.state === 'testing' ? 'Testing…' : '5 sec test'}</button></div></section>
+          <section className={`control-section readiness-card ${readiness.label.toLowerCase()}`}><div className="section-title"><span>06</span> SCREEN READY?</div><div className="readiness-score"><strong>{readiness.score}</strong><div><b>{readiness.label}</b><span>READINESS SCORE</span></div></div><p>{readiness.message}</p><ul className="readiness-list"><li className={hasSource ? 'done' : ''}>{hasSource ? '✓' : '○'} Input connected</li><li className={sampled ? 'done' : ''}>{sampled ? '✓' : '○'} Key color sampled</li><li className={readiness.lightingEven ? 'done' : ''}>{readiness.lightingEven ? '✓' : '○'} Screen lighting even</li><li className={reference ? 'done' : ''}>{reference ? '✓' : '○'} Reference plate loaded <em>optional</em></li></ul><button onClick={() => setView('diagnostic')}>Review lighting diagnostic</button></section>
         </aside>
       </section>
       <video ref={videoRef} muted playsInline className="hidden-video" />
