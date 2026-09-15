@@ -28,3 +28,4 @@
 .text-style-tools button{color:#454039;font-weight:500}.text-style-tools button:disabled{color:#655f57;opacity:.62}.text-style-tools button b,.text-style-tools button i,.text-style-tools button u,.text-style-tools button s{color:inherit}
 .text-style-tools button:disabled{color:#5c5750;opacity:1;cursor:default}.text-style-tools button:disabled:hover{border-color:transparent;background:transparent}
 .document-tools .panel-toggle{display:flex;align-items:center;gap:6px;margin-left:auto}.document-tools .panel-toggle span{font-size:11px}
+.scene-nav nav button{position:relative;overflow:visible}.scene-nav nav button.drop-after::after,.scene-nav nav button.drop-before::before{content:'';position:absolute;z-index:3;left:5px;right:5px;height:2px;border-radius:2px;background:#c66a4c;box-shadow:0 0 0 1px rgba(198,106,76,.18)}.scene-nav nav button.drop-after::after{bottom:-3px}.scene-nav nav button.drop-before::before{top:-3px}
