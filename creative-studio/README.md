@@ -1,4 +1,4 @@
-# Mise
+# Logfood
 
 A focused, local-first screenplay editor. The current milestone is to make writing fast and dependable before adding creative AI features.
 
